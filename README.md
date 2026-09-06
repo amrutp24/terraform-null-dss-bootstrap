@@ -89,9 +89,10 @@ resource "terraform_data" "dss" {
 }
 ```
 
-**Baking an image with Packer** — write `install_script` to a file and use it as
-a shell provisioner, so instances boot with DSS already installed rather than
-downloading two gigabytes each time.
+**Baking an image with Packer**
+
+Write `install_script` to a file and use it as a shell provisioner, so instances
+boot with DSS already installed rather than downloading two gigabytes each time.
 
 ## What the script does
 
@@ -99,10 +100,11 @@ Follows Dataiku's documented install order: create the service user, download
 and unpack, install OS dependencies, run `installer.sh` as that user, register
 the boot service, start DSS.
 
-It is **idempotent** — cloud-init re-runs on reboot, so the script checks for an
-existing data directory and exits rather than reinstalling over a live one. It
-never runs DSS as root. If `create_api_key` is left on, it waits for the backend
-to answer before calling `dsscli`, so minting the key does not race startup.
+The script is idempotent, which matters because cloud-init re-runs on reboot: it
+checks for an existing data directory and exits rather than reinstalling over a
+live one. DSS never runs as root. With `create_api_key` left on, the script waits
+for the backend to answer before calling `dsscli`, so minting the key does not
+race startup.
 
 ## Getting the API key out
 
@@ -112,15 +114,17 @@ browser is on the host itself. With `create_api_key` set, the bootstrap runs
 `dsscli api-key-create` and writes the result to `api_key_path` as JSON, mode
 0600.
 
-Retrieving it is the one genuinely platform-specific step, so this module does
-not decide it for you:
+Retrieving it is the one genuinely platform-specific step, so this module leaves
+it to you.
 
-- **A cloud secret manager** is cleanest — extend the script to push the key
-  into Secrets Manager, Secret Manager or Key Vault, then read it back with that
-  provider's data source. Nothing sensitive passes through Terraform state.
-- **Over SSH**, with a `remote-exec` or an `external` data source.
-- **By hand, once** — set `create_api_key = false` and create a global API key
-  under Administration → Security once the instance is up.
+A cloud secret manager is the cleanest of these: extend the script to push the
+key into Secrets Manager, Secret Manager or Key Vault, then read it back with
+that provider's data source, so nothing sensitive passes through Terraform state.
+Fetching the file over SSH with a `remote-exec` or an `external` data source
+works too.
+
+Or skip it entirely. Set `create_api_key = false` and create a global API key
+under Administration → Security once the instance is up.
 
 ## Sizing
 
