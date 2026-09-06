@@ -130,6 +130,17 @@ browser is on the host itself. With `create_api_key` set, the bootstrap runs
 `dsscli api-key-create` and writes the result to `api_key_path` as JSON, mode
 0600.
 
+`dsscli` writes an array of one object rather than a bare object, so whatever
+reads the file has to index into it:
+
+```json
+[{ "id": "...", "key": "...", "label": "terraform", "description": "Managed by Terraform" }]
+```
+
+```bash
+sudo python3 -c 'import json;print(json.load(open("/var/lib/dataiku-terraform-key.json"))[0]["key"])'
+```
+
 Retrieving it is the one genuinely platform-specific step, so this module leaves
 it to you. A cloud secret manager is the cleanest option: extend the script to
 push the key into Secrets Manager, Secret Manager or Key Vault, then read it back
