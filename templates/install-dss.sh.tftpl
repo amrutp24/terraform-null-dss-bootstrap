@@ -44,6 +44,30 @@ log "unpacking"
 sudo -u "$DSS_USER" tar xzf "$INSTALL_DIR/$TARBALL" -C "$INSTALL_DIR"
 rm -f "$INSTALL_DIR/$TARBALL"
 
+# install-deps.sh calls the distribution's package manager and assumes its
+# indexes are current. On a cloud image they are not: GCE's Ubuntu 24.04 ships
+# lists stale enough that fonts-dejavu, which is in universe and does exist,
+# resolves to nothing and the install aborts with
+#
+#   E: Unable to locate package fonts-dejavu
+#
+# Refreshing is soft-failed on purpose. apt-get update returns non-zero when a
+# single mirror is unreachable even though the rest updated, and that should
+# not kill a boot; if the refresh really did fail, install-deps.sh says so
+# immediately afterwards with a message that names the missing package.
+log "refreshing package indexes"
+if command -v apt-get >/dev/null 2>&1; then
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq || log "warning: apt-get update did not complete cleanly"
+elif command -v dnf >/dev/null 2>&1; then
+  dnf makecache --quiet || log "warning: dnf makecache did not complete cleanly"
+elif command -v yum >/dev/null 2>&1; then
+  yum makecache --quiet || log "warning: yum makecache did not complete cleanly"
+elif command -v zypper >/dev/null 2>&1; then
+  zypper --non-interactive refresh || log "warning: zypper refresh did not complete cleanly"
+else
+  log "warning: no known package manager, skipping index refresh"
+fi
+
 # Dependencies come from the unpacked tree, so they can only be installed
 # after unpacking. Running this up front avoids the documented
 # install / fail / install-deps / reinstall loop.

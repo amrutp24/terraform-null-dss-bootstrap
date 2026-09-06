@@ -154,9 +154,15 @@ terraform test
 
 The module creates nothing, so every check happens at plan time against the
 rendered script: no credentials, no cloud, no cleanup, and it runs in about a
-second. Sixteen cases, 24 assertions, covering the conditional blocks, the
+second. Eighteen cases, 30 assertions, covering the conditional blocks, the
 reinstall guard, that the installer never runs as root, and that each variable
 validation actually fires on the input it is meant to reject.
+
+Two of those cases are regressions from real boots that failed after the 1.9 GB
+download had already succeeded: a CRLF checkout turning the shebang into
+`bash\r`, and package indexes stale enough that `install-deps.sh` could not find
+a package that exists. Both are the kind of failure that only shows up on a real
+machine, so both now have a test that fails without the fix.
 
 ## Licensing DSS
 

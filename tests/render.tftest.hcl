@@ -11,6 +11,43 @@ variables {
 # died with "/usr/bin/env: 'bash\r': No such file or directory". Nothing here
 # caught it, because startswith(script, "#!/usr/bin/env bash") is still true
 # when the carriage return sits just past the match.
+# Regression: install-deps.sh assumes current package indexes. A GCE Ubuntu
+# 24.04 image's are stale, so it aborted on "Unable to locate package
+# fonts-dejavu" after the 1.9 GB download had already succeeded.
+run "refreshes_package_indexes_before_installing_dependencies" {
+  command = plan
+
+  # Everything from a '#' onwards is dropped before matching, so only a real
+  # command counts. Two weaker versions of this check passed against a script
+  # where the command had been replaced by a comment naming it: first a bare
+  # strcontains over the whole script, then one that skipped only whole-line
+  # comments and so still matched a trailing one.
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "apt-get update")
+    ])
+    error_message = "Nothing refreshes apt's indexes, so install-deps.sh can fail to find packages that exist."
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", split("scripts/install/install-deps.sh", output.install_script)[0]) :
+      strcontains(split("#", line)[0], "apt-get update")
+    ])
+    error_message = "The refresh must come before install-deps.sh runs, or it is pointless."
+  }
+
+  assert {
+    condition = alltrue([
+      strcontains(output.install_script, "dnf makecache"),
+      strcontains(output.install_script, "yum makecache"),
+      strcontains(output.install_script, "zypper --non-interactive refresh"),
+    ])
+    error_message = "The refresh should cover the non-apt distributions install-deps.sh supports."
+  }
+}
+
 run "carries_no_carriage_returns" {
   command = plan
 
