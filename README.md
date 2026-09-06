@@ -25,6 +25,9 @@ Most people want one of the modules that already wires this to a platform:
 
 Use this one directly when your target is not among them.
 
+Terraform >= 1.5. No providers, so nothing to install and nothing to
+authenticate against.
+
 ## Usage
 
 ```hcl
@@ -38,6 +41,19 @@ module "bootstrap" {
 ```
 
 Then hand `module.bootstrap.install_script` to whatever runs it.
+
+## Outputs
+
+| Output | Use |
+| --- | --- |
+| `install_script` | The rendered script. Run it as root on a Linux host. |
+| `cloud_init` | The same script as cloud-config, for targets that take cloud-init. |
+| `api_key_path` | Where the bootstrap left the admin key, or null when `create_api_key` is off. |
+| `data_dir`, `dss_port`, `url_path` | Echoed back so callers can build a URL and pick a disk mount point. |
+
+`install_script` and `cloud_init` are marked sensitive, because a `license_json`
+you pass in is rendered into both. Re-exporting either from your own root module
+needs `sensitive = true` on your output, or the plan fails.
 
 ## Wiring it to a target
 
@@ -115,13 +131,11 @@ browser is on the host itself. With `create_api_key` set, the bootstrap runs
 0600.
 
 Retrieving it is the one genuinely platform-specific step, so this module leaves
-it to you.
-
-A cloud secret manager is the cleanest of these: extend the script to push the
-key into Secrets Manager, Secret Manager or Key Vault, then read it back with
-that provider's data source, so nothing sensitive passes through Terraform state.
-Fetching the file over SSH with a `remote-exec` or an `external` data source
-works too.
+it to you. A cloud secret manager is the cleanest option: extend the script to
+push the key into Secrets Manager, Secret Manager or Key Vault, then read it back
+with that provider's data source, so nothing sensitive passes through Terraform
+state. Fetching the file over SSH with a `remote-exec` or an `external` data
+source works too.
 
 Or skip it entirely. Set `create_api_key = false` and create a global API key
 under Administration → Security once the instance is up.
@@ -138,16 +152,17 @@ persistent disk you back up, separate from the boot disk.
 terraform test
 ```
 
-The module creates nothing, so every assertion is a plan-time check on the
-rendered script: no credentials, no cloud, no cleanup. Sixteen of them, covering
-the conditional blocks, the reinstall guard, that the installer never runs as
-root, and that the variable validations actually fire.
+The module creates nothing, so every check happens at plan time against the
+rendered script: no credentials, no cloud, no cleanup, and it runs in about a
+second. Sixteen cases, 24 assertions, covering the conditional blocks, the
+reinstall guard, that the installer never runs as root, and that each variable
+validation actually fires on the input it is meant to reject.
 
 ## Licensing DSS
 
-The `dataiku` provider talks to the DSS public REST API, which the Free Edition
-does not licence on its own — though the Enterprise trial bundled with it does,
-while that trial lasts. Pass a licence with `license_json`, or register the
+The `dataiku` provider talks to the DSS public REST API, and the Free Edition
+does not licence that on its own. The Enterprise trial bundled with it does, for
+as long as the trial lasts. Pass a licence with `license_json`, or register the
 instance through its web interface on first visit.
 
 `license_json` is rendered into the script, so it reaches instance metadata and
