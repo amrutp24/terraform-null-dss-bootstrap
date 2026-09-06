@@ -8,7 +8,7 @@ terraform {
 }
 
 locals {
-  install_script = templatefile("${path.module}/templates/install-dss.sh.tftpl", {
+  rendered_script = templatefile("${path.module}/templates/install-dss.sh.tftpl", {
     dss_version       = var.dss_version
     dss_port          = var.dss_port
     dss_user          = var.dss_user
@@ -20,6 +20,13 @@ locals {
     api_key_label     = var.api_key_label
     api_key_path      = var.api_key_path
   })
+
+  # The script runs on Linux, so it must not carry CRLF. .gitattributes pins
+  # the checkout, but Terraform installs registry modules by cloning and the
+  # consumer's git config is not ours to trust: a CRLF shebang fails as
+  # "/usr/bin/env: 'bash\r': No such file or directory" halfway through a boot
+  # nobody is watching. Stripping here costs nothing and ends the class of bug.
+  install_script = replace(local.rendered_script, "\r\n", "\n")
 
   # cloud-init runs the same script; wrapping it this way is what lets the
   # major clouds consume it directly as user-data.

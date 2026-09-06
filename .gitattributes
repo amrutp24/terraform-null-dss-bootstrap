@@ -1,0 +1,12 @@
+# The rendered install script runs on Linux. A Windows clone with
+# core.autocrlf=true would otherwise check the template out with CRLF, and the
+# shebang becomes "#!/usr/bin/env bash\r", which fails with
+#
+#   /usr/bin/env: 'bash\r': No such file or directory
+#
+# on a machine nobody is watching. Terraform installs registry modules from
+# GitHub by cloning, so the consumer's autocrlf decides what the module gets;
+# pinning it here takes that decision away from them.
+*.tftpl text eol=lf
+*.sh    text eol=lf
+*.tf    text eol=lf

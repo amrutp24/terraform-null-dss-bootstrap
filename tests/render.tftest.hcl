@@ -6,6 +6,30 @@ variables {
   dss_version = "15.0.0"
 }
 
+# Regression: a Windows clone with core.autocrlf=true checked the template out
+# with CRLF, so the shebang rendered as "#!/usr/bin/env bash\r" and every boot
+# died with "/usr/bin/env: 'bash\r': No such file or directory". Nothing here
+# caught it, because startswith(script, "#!/usr/bin/env bash") is still true
+# when the carriage return sits just past the match.
+run "carries_no_carriage_returns" {
+  command = plan
+
+  assert {
+    condition     = !strcontains(output.install_script, "\r")
+    error_message = "The script contains CR. A CRLF shebang makes Linux look for a command named 'bash\\r'."
+  }
+
+  assert {
+    condition     = !strcontains(output.cloud_init, "\r")
+    error_message = "The cloud-init document contains CR."
+  }
+
+  assert {
+    condition     = startswith(output.install_script, "#!/usr/bin/env bash\n")
+    error_message = "The shebang line must end at a bare newline."
+  }
+}
+
 run "defaults_render_a_usable_script" {
   command = plan
 
