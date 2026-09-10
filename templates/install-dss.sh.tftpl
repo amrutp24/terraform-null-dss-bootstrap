@@ -73,6 +73,207 @@ fi
 # install / fail / install-deps / reinstall loop.
 log "installing OS dependencies"
 "$UNPACKED/scripts/install/install-deps.sh" -yes
+%{ if containerized_execution ~}
+
+# ---------------------------------------------------------------------------
+# Containerized execution ("Elastic AI") host preparation.
+#
+# Dataiku's requirement is blunt: "You must have an existing Docker daemon. The
+# docker command on the DSS machine must be fully functional and usable by the
+# user running DSS. This includes the permission to build images, and thus
+# access to a Docker socket."
+#
+# This whole section sits before installer.sh on purpose. A process's
+# supplementary groups are fixed when it starts, so the DSS user has to be in
+# the docker group before "dss start" runs at the bottom of this script.
+# Adding the group afterwards leaves a backend that cannot reach the socket
+# until somebody restarts it, which is a confusing thing to debug because
+# "groups dataiku" looks correct while DSS still gets permission denied.
+#
+# Nothing here needs a package beyond what install-deps.sh already pulled in;
+# every artefact below is a direct download. That is deliberate, so this
+# section does not need a second package-index refresh.
+#
+# Re-running the script does not reach this point at all: the guard near the
+# top exits when $DATA_DIR/bin/dss exists, so a reboot never reinstalls Docker.
+# Each step is guarded anyway, for the case where this runs on an image that
+# already carries some of these tools.
+# ---------------------------------------------------------------------------
+
+# Aborting on an unknown machine type is the right call: every download below
+# is per-architecture, and guessing puts a binary on the host that fails with
+# "cannot execute binary file" much later, in someone else's error report.
+case "$(uname -m)" in
+  x86_64) HOST_ARCH="amd64" ;;
+  aarch64 | arm64) HOST_ARCH="arm64" ;;
+  *)
+    log "unsupported architecture $(uname -m) for containerized execution"
+    exit 1
+    ;;
+esac
+
+if command -v docker >/dev/null 2>&1; then
+  log "docker is already installed, leaving it alone"
+
+  # An image that ships podman-docker satisfies "command -v docker" while being
+  # exactly what Dataiku rules out: "Dataiku DSS is not compatible with podman".
+  # This warns rather than aborts, because we did not put it there and the
+  # operator may know something we do not, but it says so loudly: the failure
+  # it causes otherwise surfaces days later inside a recipe.
+  if docker --version 2>/dev/null | grep -qi podman; then
+    log "warning: the docker command on this host is podman, which DSS does not support"
+  fi
+else
+  # Distribution packages are not an option here. On the RHEL family
+  # "dnf install docker" resolves to podman-docker, a docker-named shim over
+  # podman -- the one engine Dataiku names as unsupported -- and Ubuntu's
+  # docker.io trails upstream. Docker's own script installs docker-ce on every
+  # distribution this module targets, so that is what we use.
+  #
+  # A failure here aborts the boot, and that is deliberate. Containerized
+  # execution was asked for explicitly; a host that boots "successfully" with
+  # no Docker daemon looks healthy until the first container recipe fails, by
+  # which point nobody is reading cloud-init logs. The retries below cover the
+  # transient case, which is the only one worth surviving.
+  log "installing Docker"
+  curl --fail --location --retry 5 --retry-delay 10 \
+    --output /tmp/get-docker.sh https://get.docker.com
+  sh /tmp/get-docker.sh
+  rm -f /tmp/get-docker.sh
+fi
+
+# install-boot.sh registers DSS with systemd further down, so the daemon it
+# depends on has to come up on every boot. Enabling is a local file operation;
+# if it fails something is properly wrong, so let it abort.
+systemctl enable docker
+
+# Starting is soft-failed instead. In a Packer or container image build there
+# is often no running systemd to talk to, and it is the enable above that
+# matters for instances built from that image. On a real boot a failure here
+# announces itself immediately in the Docker step of the first recipe.
+systemctl start docker || log "warning: could not start dockerd, is systemd running?"
+
+# Dataiku's docs say the docker command must be "usable by the user running
+# DSS ... including the permission to build images, and thus access to a
+# Docker socket", but stop short of saying how to arrange that. On a stock
+# install the socket is root:docker mode 0660, so group membership is the only
+# thing that satisfies that sentence. This line is ours, not theirs.
+#
+# groupadd covers the case where docker was already present from something that
+# did not create the group; without it usermod fails with "group 'docker' does
+# not exist" and takes the boot with it.
+getent group docker >/dev/null 2>&1 || groupadd docker
+usermod -aG docker "$DSS_USER"
+
+if command -v kubectl >/dev/null 2>&1; then
+  log "kubectl is already installed, leaving it alone"
+else
+  # Aborts on failure, same reasoning as Docker: this was opted into, and a
+  # persistent failure to reach dl.k8s.io means the host has no egress, which
+  # is going to break far more than kubectl.
+  log "installing kubectl"
+  KUBECTL_VERSION="${kubectl_version}"
+  if [ -z "$KUBECTL_VERSION" ]; then
+    KUBECTL_VERSION="$(curl --fail --silent --show-error --location --retry 5 --retry-delay 10 https://dl.k8s.io/release/stable.txt)"
+  fi
+  curl --fail --location --retry 5 --retry-delay 10 \
+    --output /usr/local/bin/kubectl \
+    "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/$HOST_ARCH/kubectl"
+  chmod 0755 /usr/local/bin/kubectl
+fi
+%{ endif ~}
+%{ if gcloud_registry_host != "" || gke_cluster_name != "" ~}
+
+# ---------------------------------------------------------------------------
+# Google Cloud wiring.
+#
+# Gated on its own variables, separately from containerized_execution, so this
+# module stays cloud-neutral: none of it renders unless a caller asked for it,
+# and the same script still boots on EC2, on Azure, on bare metal and inside an
+# image build.
+# ---------------------------------------------------------------------------
+
+if command -v gcloud >/dev/null 2>&1; then
+  # The stock GCE Debian and Ubuntu images already ship the CLI, and on those
+  # it is a distribution package we should not fight with a tarball install.
+  log "gcloud is already installed, leaving it alone"
+else
+  # Google's archive names do not match Kubernetes': x86_64 and arm, not amd64
+  # and arm64. Getting this wrong is a 404 on an otherwise fine host.
+  case "$(uname -m)" in
+    x86_64) GCLOUD_ARCH="x86_64" ;;
+    aarch64 | arm64) GCLOUD_ARCH="arm" ;;
+    *)
+      log "unsupported architecture $(uname -m) for the gcloud CLI"
+      exit 1
+      ;;
+  esac
+
+  # Aborts on failure: the only reason this block rendered at all is that a
+  # caller asked for GCP wiring, and every step after it needs the CLI.
+  log "installing the gcloud CLI"
+  curl --fail --location --retry 5 --retry-delay 10 \
+    --output /tmp/google-cloud-cli.tar.gz \
+    "https://dl.google.com/dl/cloudsdk/channels/rapid/downloads/google-cloud-cli-linux-$GCLOUD_ARCH.tar.gz"
+  tar xzf /tmp/google-cloud-cli.tar.gz -C /opt
+  rm -f /tmp/google-cloud-cli.tar.gz
+  /opt/google-cloud-sdk/install.sh --quiet --usage-reporting false --path-update false
+
+  # DSS shells out with a non-login, non-interactive shell, so a PATH export
+  # written into /etc/profile.d would never be read. A symlink on the default
+  # PATH is what actually makes gcloud reachable from a recipe.
+  ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud
+fi
+
+if ! command -v gke-gcloud-auth-plugin >/dev/null 2>&1; then
+  # get-credentials writes a kubeconfig that shells out to this plugin; without
+  # it kubectl fails with "no Auth Provider found for name \"gcp\"".
+  #
+  # Soft-failed: a gcloud that came from a distribution package has its
+  # component manager disabled and refuses this command outright, because the
+  # plugin ships as its own package there. That is a normal, working setup on
+  # GCE images, so it must not abort a boot.
+  gcloud components install gke-gcloud-auth-plugin --quiet ||
+    log "warning: could not install gke-gcloud-auth-plugin, kubectl may fail to authenticate to GKE"
+fi
+
+%{ if gcloud_registry_host != "" ~}
+# Writes ~/.docker/config.json for the DSS user so image pushes find a
+# credential helper. -H is load-bearing: sudo otherwise keeps HOME=/root and
+# the config lands somewhere the DSS user will never read it, which looks like
+# a permissions problem in the registry rather than a misplaced file.
+#
+# Aborts on failure. It is a local file write against an already-installed CLI,
+# so a failure means the CLI is broken, not that the network blinked.
+log "configuring docker credentials for ${gcloud_registry_host}"
+sudo -u "$DSS_USER" -H gcloud auth configure-docker --quiet "${gcloud_registry_host}"
+%{ endif ~}
+
+%{ if gke_cluster_name != "" ~}
+# Writes ~/.kube/config for the DSS user, and -H matters for the same reason.
+#
+# This is the one step in the whole script that warns instead of aborting on a
+# genuine failure. It routinely fails for reasons that have nothing to do with
+# the host: Terraform may still be creating the cluster, the VM's service
+# account may not have container.clusters.get yet, or a fresh control plane may
+# take a minute to answer. DSS is entirely usable without a kubeconfig, and an
+# admin fixes this with one command; aborting would turn a temporary ordering
+# problem into a dead instance and a repeat of the 1.9 GB download.
+log "fetching credentials for GKE cluster ${gke_cluster_name}"
+GKE_CREDS_OK=0
+for _ in 1 2 3; do
+  if sudo -u "$DSS_USER" -H gcloud container clusters get-credentials \
+    "${gke_cluster_name}" --zone "${gke_cluster_zone}"; then
+    GKE_CREDS_OK=1
+    break
+  fi
+  sleep 15
+done
+if [ "$GKE_CREDS_OK" -ne 1 ]; then
+  log "warning: could not fetch GKE credentials, re-run get-credentials as $DSS_USER once the cluster answers"
+fi
+%{ endif ~}
+%{ endif ~}
 
 %{ if license_json != "" ~}
 log "writing licence"
@@ -116,6 +317,27 @@ sudo -u "$DSS_USER" "$DATA_DIR/bin/dsscli" api-key-create \
   --output json > "${api_key_path}"
 chmod 0600 "${api_key_path}"
 log "API key written to ${api_key_path}"
+%{ endif ~}
+%{ if build_base_image ~}
+
+# The container-exec base image is what DSS runs containerized recipes inside.
+# Dataiku has you build it by hand after installing; doing it here means the
+# first recipe does not pay for it.
+#
+# It sits last for two reasons. dssadmin only exists once installer.sh has
+# created the data directory, so it cannot run any earlier than this. And it is
+# slow -- it pulls a base OS image, layers the DSS code environment on top and
+# pushes the result -- so everything that makes the instance usable is already
+# done and answering before the boot script spends minutes here.
+#
+# Warns rather than aborts. Unlike the Docker install, nothing downstream in
+# this script depends on it, and it fails for external reasons more readily
+# than anything else here: registry authentication, a quota, a full disk. A
+# running instance plus one command to re-run beats a boot marked failed.
+log "building the container-exec base image, this is slow"
+if ! sudo -u "$DSS_USER" -H sh -c "cd '$DATA_DIR' && ./bin/dssadmin build-base-image --type container-exec"; then
+  log "warning: build-base-image failed, re-run it as $DSS_USER from $DATA_DIR"
+fi
 %{ endif ~}
 
 log "done"

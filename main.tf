@@ -19,6 +19,13 @@ locals {
     create_api_key    = var.create_api_key
     api_key_label     = var.api_key_label
     api_key_path      = var.api_key_path
+
+    containerized_execution = var.containerized_execution
+    kubectl_version         = var.kubectl_version
+    gcloud_registry_host    = var.gcloud_registry_host
+    gke_cluster_name        = var.gke_cluster_name
+    gke_cluster_zone        = var.gke_cluster_zone
+    build_base_image        = var.build_base_image
   })
 
   # The script runs on Linux, so it must not carry CRLF. .gitattributes pins

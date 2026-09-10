@@ -2,6 +2,18 @@ output "install_script" {
   description = "The rendered bootstrap script. Run it as root on any Linux host: pass it as EC2 user-data, a GCE startup script, an Azure custom script, a remote-exec payload, or a Packer provisioner."
   value       = local.install_script
   sensitive   = true # carries license_json when one was supplied
+
+  # get-credentials needs both halves. With only one set the script renders
+  # --zone "" and dies mid-boot, which is the exact class of failure the
+  # variable validations exist to move to plan time.
+  #
+  # It lives on an output rather than in a validation block because a variable
+  # validation could not look at another variable until Terraform 1.9, and this
+  # module still supports 1.5.
+  precondition {
+    condition     = (var.gke_cluster_name == "") == (var.gke_cluster_zone == "")
+    error_message = "gke_cluster_name and gke_cluster_zone must be set together; gcloud container clusters get-credentials needs both."
+  }
 }
 
 output "cloud_init" {

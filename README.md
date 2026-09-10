@@ -122,6 +122,83 @@ live one. DSS never runs as root. With `create_api_key` left on, the script wait
 for the backend to answer before calling `dsscli`, so minting the key does not
 race startup.
 
+## Containerized execution (Elastic AI)
+
+Off by default. `containerized_execution = true` also prepares the host to run
+[containerized execution](https://doc.dataiku.com/dss/latest/containers/index.html):
+
+```hcl
+module "bootstrap" {
+  source  = "amrutp24/dss-bootstrap/null"
+  version = "~> 0.1"
+
+  dss_version             = "15.0.0"
+  containerized_execution = true
+  kubectl_version         = "v1.31.0"
+}
+```
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `containerized_execution` | `false` | Installs a Docker daemon, adds `dss_user` to the `docker` group, installs kubectl. |
+| `kubectl_version` | `""` | kubectl release, e.g. `v1.31.0`. Empty takes the current `stable`. |
+| `gcloud_registry_host` | `""` | Installs the gcloud CLI and runs `gcloud auth configure-docker <host>` as the DSS user. |
+| `gke_cluster_name` | `""` | Installs the gcloud CLI and fetches a kubeconfig for this cluster, as the DSS user. |
+| `gke_cluster_zone` | `""` | Zone for the above. Set both or neither; a plan with one fails. |
+| `build_base_image` | `false` | Runs `dssadmin build-base-image --type container-exec` after DSS is installed. |
+
+Docker comes from Docker's own install script rather than the distribution
+package, because on the RHEL family `dnf install docker` gives you
+podman-docker and Dataiku states plainly that DSS is not compatible with
+podman.
+
+Dataiku requires that "the `docker` command on the DSS machine must be fully
+functional and usable by the user running DSS", including access to the socket,
+but does not say how to arrange it. The socket is `root:docker` mode 0660 on a
+stock install, so the module puts `dss_user` in the `docker` group. That happens
+before DSS starts, on purpose: supplementary groups are fixed when a process
+starts, so granting the group to an already-running backend does nothing until
+someone restarts it.
+
+The two GCP variables are gated separately from `containerized_execution`, and
+from each other, so the module stays cloud-neutral. Nothing GCP-specific is
+rendered unless you ask for it, and the same script still boots on EC2, on
+Azure, on bare metal and inside a Packer build.
+
+`build_base_image` is its own variable because it is slow and pushes large
+images. It runs last, after DSS is installed and answering, and a failure warns
+rather than aborting: nothing else in the script depends on it and re-running it
+is one command. The GKE credential fetch warns for the same kind of reason — a
+cluster that Terraform is still creating, or a service account that does not yet
+have `container.clusters.get`, should not kill a boot that already downloaded
+1.9 GB. Everything else in this section aborts the boot on failure, because a
+host that comes up looking healthy with no Docker daemon only reveals that when
+somebody runs a recipe days later.
+
+### What this does not do
+
+- **It does not configure DSS.** Nothing here creates the containerized
+  execution config, the Kubernetes cluster, the node pools, the registry, the
+  service account or its IAM. Those belong in your cloud module and in the
+  `dataiku` provider. This module only prepares the host.
+- **It does not manage the cluster.** `gke_cluster_name` fetches a kubeconfig
+  for a cluster you already have. There is no equivalent for EKS or AKS: for
+  those, install the CLI yourself in your own user-data, or bake it into the
+  image.
+- **It assumes outbound internet.** `get.docker.com`, `dl.k8s.io` and
+  `dl.google.com` are hardcoded, unlike `download_base_url`. An air-gapped host
+  needs a machine image that already carries these tools; each install step is
+  skipped when the command is already present, so that works.
+- **It does not pin Docker.** Only kubectl has a version variable, because
+  kubectl tolerates one minor version of skew from the cluster and will
+  eventually stop talking to it.
+- **It does not rerun on reboot.** The existing "DSS is already installed" guard
+  exits before any of this, so a reboot does not reinstall Docker — and equally,
+  turning `containerized_execution` on for an instance that is already up does
+  nothing until you rebuild it or run the steps by hand.
+- **It does not verify anything worked.** There is no post-install check that
+  the DSS user can actually reach the socket.
+
 ## Getting the API key out
 
 The [`dataiku` provider](https://registry.terraform.io/providers/amrutp24/dataiku/latest)
@@ -165,9 +242,16 @@ terraform test
 
 The module creates nothing, so every check happens at plan time against the
 rendered script: no credentials, no cloud, no cleanup, and it runs in about a
-second. Eighteen cases, 30 assertions, covering the conditional blocks, the
-reinstall guard, that the installer never runs as root, and that each variable
-validation actually fires on the input it is meant to reject.
+second. Thirty-two cases, 64 assertions, covering the conditional blocks, the
+reinstall guard, that the installer never runs as root, that the containerized
+execution blocks are absent until asked for and correctly ordered when they are,
+and that each variable validation actually fires on the input it is meant to
+reject.
+
+Assertions that name a command match line by line with everything from a `#`
+onwards removed, so a comment mentioning the command cannot satisfy them. Two
+weaker versions of that check passed against a script where the command had been
+replaced by a comment naming it.
 
 Two of those cases are regressions from real boots that failed after the 1.9 GB
 download had already succeeded: a CRLF checkout turning the shebang into
