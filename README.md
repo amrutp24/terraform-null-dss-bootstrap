@@ -166,9 +166,14 @@ rendered unless you ask for it, and the same script still boots on EC2, on
 Azure, on bare metal and inside a Packer build.
 
 `build_base_image` is its own variable because it is slow and pushes large
-images. It runs last, after DSS is installed and answering, and a failure warns
-rather than aborting: nothing else in the script depends on it and re-running it
-is one command. The GKE credential fetch warns for the same kind of reason — a
+images, but it requires `containerized_execution` and the plan fails without it.
+The build needs the Docker socket, and this script creates the DSS user, so that
+user can only join the `docker` group here: without it the build hits permission
+denied whatever the machine image ships. Setting both costs a host that already
+has Docker nothing, since the install is skipped when the `docker` command is
+already present. It runs last, after DSS is installed and answering, and a
+failure warns rather than aborting: nothing else in the script depends on it and
+re-running it is one command. The GKE credential fetch warns for the same kind of reason — a
 cluster that Terraform is still creating, or a service account that does not yet
 have `container.clusters.get`, should not kill a boot that already downloaded
 1.9 GB. Everything else in this section aborts the boot on failure, because a

@@ -471,9 +471,14 @@ run "the_base_image_is_built_after_dss_is_installed" {
   command = plan
 
   variables {
-    # Deliberately without containerized_execution: the build is its own
-    # variable so a host whose Docker came from the machine image can have it.
-    build_base_image = true
+    # The build is its own variable because it is slow, but it cannot stand
+    # alone: this script creates the DSS user, so that user only joins the
+    # docker group under containerized_execution, and without the group the
+    # build hits permission denied on the socket whatever the image ships.
+    # A host that already has Docker loses nothing by setting both, since the
+    # install is skipped when the docker command is already present.
+    build_base_image        = true
+    containerized_execution = true
   }
 
   assert {

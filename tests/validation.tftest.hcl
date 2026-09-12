@@ -95,6 +95,36 @@ run "rejects_a_gke_cluster_without_its_zone" {
   expect_failures = [output.install_script]
 }
 
+run "rejects_building_a_base_image_without_a_docker_daemon" {
+  command = plan
+
+  variables {
+    build_base_image = true
+  }
+
+  # Without containerized_execution there is no Docker on the host, and the
+  # build step only warns, so the instance would come up healthy with no base
+  # image and nothing said about it until a containerized recipe failed.
+  expect_failures = [output.install_script]
+}
+
+run "accepts_building_a_base_image_alongside_the_daemon" {
+  command = plan
+
+  variables {
+    build_base_image        = true
+    containerized_execution = true
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "dssadmin build-base-image --type container-exec")
+    ])
+    error_message = "The base image build did not render when it was asked for alongside the daemon."
+  }
+}
+
 run "rejects_a_zone_without_a_gke_cluster" {
   command = plan
 
