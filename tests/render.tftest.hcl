@@ -222,6 +222,319 @@ run "cloud_init_wraps_the_same_script" {
   }
 }
 
+run "containerized_execution_renders_nothing_by_default" {
+  command = plan
+
+  # The feature is opt-in, so an existing caller who upgrades this module must
+  # get a byte-identical script. These strings appear nowhere else in the
+  # template, comments included, so a plain strcontains is the strict check
+  # here rather than the loose one.
+  assert {
+    condition = alltrue([
+      !strcontains(output.install_script, "docker"),
+      !strcontains(output.install_script, "kubectl"),
+      !strcontains(output.install_script, "gcloud"),
+      !strcontains(output.install_script, "build-base-image"),
+    ])
+    error_message = "Containerized-execution setup leaked into the default script."
+  }
+}
+
+run "containerized_execution_installs_docker_and_kubectl" {
+  command = plan
+
+  variables {
+    containerized_execution = true
+  }
+
+  # Comment-stripped, for the reason given at the top of this file: a comment
+  # naming the command must not be able to satisfy an assertion about it.
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "sh /tmp/get-docker.sh")
+    ])
+    error_message = "Nothing installs a Docker daemon, which containerized execution requires."
+  }
+
+  # Dataiku says DSS is not compatible with podman, and on the RHEL family the
+  # distribution's "docker" package is podman-docker. Docker's own script is
+  # what gets docker-ce, so pin the assertion to it.
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "https://get.docker.com")
+    ])
+    error_message = "Docker must come from Docker, not from a distribution package that may be podman."
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "systemctl enable docker")
+    ])
+    error_message = "The Docker daemon must be enabled, or it will not be there after the first reboot."
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "/usr/local/bin/kubectl")
+    ])
+    error_message = "Nothing installs kubectl."
+  }
+
+  # Left unpinned the script has to ask dl.k8s.io what stable means today.
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "https://dl.k8s.io/release/stable.txt")
+    ])
+    error_message = "With no kubectl_version the script must resolve the current stable release."
+  }
+
+  # Nothing above is GCP-specific, so a plain Docker plus kubectl host must
+  # render without a trace of Google.
+  assert {
+    condition     = !strcontains(output.install_script, "gcloud")
+    error_message = "GCP wiring rendered without any GCP variable being set."
+  }
+}
+
+run "a_pinned_kubectl_version_is_used_verbatim" {
+  command = plan
+
+  variables {
+    containerized_execution = true
+    kubectl_version         = "v1.31.0"
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "KUBECTL_VERSION=\"v1.31.0\"")
+    ])
+    error_message = "The pinned kubectl version did not reach the script."
+  }
+}
+
+run "the_dss_user_joins_the_docker_group_before_dss_starts" {
+  command = plan
+
+  variables {
+    containerized_execution = true
+  }
+
+  # Dataiku's requirements say the docker command must be usable by the user
+  # running DSS, but never say how. The socket is root:docker 0660, so this is
+  # the step that actually satisfies it.
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "usermod -aG docker \"$DSS_USER\"")
+    ])
+    error_message = "The DSS user is not in the docker group, so DSS cannot reach the socket."
+  }
+
+  # Supplementary groups are fixed when a process starts. Adding the group
+  # after "dss start" leaves a backend that is denied the socket until someone
+  # restarts it, and "groups dataiku" looks correct the whole time.
+  assert {
+    condition = anytrue([
+      for line in split("\n", split("\"$DATA_DIR/bin/dss\" start", output.install_script)[0]) :
+      strcontains(split("#", line)[0], "usermod -aG docker")
+    ])
+    error_message = "The docker group must be granted before DSS is started, or the running backend never picks it up."
+  }
+
+  # groupadd first, because docker may already be present from the machine
+  # image without the group; usermod would then abort the boot.
+  assert {
+    condition = anytrue([
+      for line in split("\n", split("usermod -aG docker", output.install_script)[0]) :
+      strcontains(split("#", line)[0], "groupadd docker")
+    ])
+    error_message = "usermod runs before anything guarantees the docker group exists."
+  }
+}
+
+run "gcp_wiring_needs_its_own_variables" {
+  command = plan
+
+  variables {
+    # Containerized execution on its own must stay cloud-neutral: this same
+    # script has to boot on EC2, on Azure and on bare metal.
+    containerized_execution = true
+  }
+
+  assert {
+    condition = alltrue([
+      !strcontains(output.install_script, "gcloud"),
+      !strcontains(output.install_script, "configure-docker"),
+      !strcontains(output.install_script, "get-credentials"),
+      !strcontains(output.install_script, "dl.google.com"),
+    ])
+    error_message = "Containerized execution must not drag GCP-specific commands into the script."
+  }
+}
+
+run "a_registry_host_configures_docker_credentials_only" {
+  command = plan
+
+  variables {
+    containerized_execution = true
+    gcloud_registry_host    = "us-central1-docker.pkg.dev"
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "gcloud auth configure-docker --quiet \"us-central1-docker.pkg.dev\"")
+    ])
+    error_message = "The registry host did not reach gcloud auth configure-docker."
+  }
+
+  # -H is load-bearing: without it sudo keeps HOME=/root and the credential
+  # helper config lands where the DSS user will never read it.
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "sudo -u \"$DSS_USER\" -H gcloud auth configure-docker")
+    ])
+    error_message = "configure-docker must run as the DSS user with its own HOME."
+  }
+
+  # Each GCP variable gates its own step, so a registry host alone must not
+  # pull in a cluster it was never told about.
+  assert {
+    condition     = !strcontains(output.install_script, "gcloud container clusters get-credentials")
+    error_message = "A registry host must not trigger a GKE credential fetch."
+  }
+}
+
+run "a_gke_cluster_fetches_credentials_only" {
+  command = plan
+
+  variables {
+    containerized_execution = true
+    gke_cluster_name        = "dss-elastic-ai"
+    gke_cluster_zone        = "us-central1-a"
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "sudo -u \"$DSS_USER\" -H gcloud container clusters get-credentials")
+    ])
+    error_message = "The kubeconfig must be fetched as the DSS user with its own HOME."
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "\"dss-elastic-ai\" --zone \"us-central1-a\"")
+    ])
+    error_message = "The cluster name and zone did not reach get-credentials."
+  }
+
+  # A cluster that is still being created, or a service account without
+  # container.clusters.get, must not kill a boot that has already downloaded
+  # 1.9 GB and installed DSS.
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "warning: could not fetch GKE credentials")
+    ])
+    error_message = "A failed credential fetch must warn rather than abort the boot."
+  }
+
+  assert {
+    condition     = !strcontains(output.install_script, "configure-docker")
+    error_message = "A cluster must not trigger registry credential configuration."
+  }
+}
+
+run "the_base_image_build_is_separately_opt_in" {
+  command = plan
+
+  variables {
+    containerized_execution = true
+  }
+
+  assert {
+    condition     = !strcontains(output.install_script, "build-base-image")
+    error_message = "The slow base-image build must not come along with containerized_execution."
+  }
+}
+
+run "the_base_image_is_built_after_dss_is_installed" {
+  command = plan
+
+  variables {
+    # The build is its own variable because it is slow, but it cannot stand
+    # alone: this script creates the DSS user, so that user only joins the
+    # docker group under containerized_execution, and without the group the
+    # build hits permission denied on the socket whatever the image ships.
+    # A host that already has Docker loses nothing by setting both, since the
+    # install is skipped when the docker command is already present.
+    build_base_image        = true
+    containerized_execution = true
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "./bin/dssadmin build-base-image --type container-exec")
+    ])
+    error_message = "The base image is not built."
+  }
+
+  # dssadmin only exists once installer.sh has created the data directory, so
+  # a build placed earlier would fail on a missing file every single boot.
+  assert {
+    condition = !anytrue([
+      for line in split("\n", split("\"$UNPACKED/installer.sh\"", output.install_script)[0]) :
+      strcontains(split("#", line)[0], "dssadmin build-base-image")
+    ])
+    error_message = "The base image build must not run before installer.sh has created the data directory."
+  }
+
+  # Dataiku documents this as run from the data directory as the DSS user.
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "sudo -u \"$DSS_USER\" -H sh -c \"cd '$DATA_DIR' && ./bin/dssadmin build-base-image")
+    ])
+    error_message = "The base image must be built as the DSS user from the data directory."
+  }
+}
+
+run "containerized_execution_carries_no_carriage_returns" {
+  command = plan
+
+  # The CRLF regression is not a one-off property of the original template: any
+  # block added later can reintroduce it, and it fails on a machine nobody is
+  # watching. Check the largest script this module can render.
+  variables {
+    containerized_execution = true
+    gcloud_registry_host    = "us-central1-docker.pkg.dev"
+    gke_cluster_name        = "dss-elastic-ai"
+    gke_cluster_zone        = "us-central1-a"
+    build_base_image        = true
+    license_json            = "{\"licenseKind\":\"COMMUNITY\"}"
+  }
+
+  assert {
+    condition     = !strcontains(output.install_script, "\r")
+    error_message = "The script contains CR with containerized execution enabled."
+  }
+
+  assert {
+    condition     = !strcontains(output.cloud_init, "\r")
+    error_message = "The cloud-init document contains CR with containerized execution enabled."
+  }
+}
+
 run "custom_paths_and_port_are_honoured" {
   command = plan
 

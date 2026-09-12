@@ -58,6 +58,83 @@ run "rejects_a_port_above_the_valid_range" {
   expect_failures = [var.dss_port]
 }
 
+run "rejects_a_kubectl_version_without_its_leading_v" {
+  command = plan
+
+  variables {
+    containerized_execution = true
+    # dl.k8s.io serves /release/v1.31.0/..., so "1.31.0" is a 404 at boot.
+    kubectl_version = "1.31.0"
+  }
+
+  expect_failures = [var.kubectl_version]
+}
+
+run "rejects_a_registry_url_where_a_host_belongs" {
+  command = plan
+
+  variables {
+    # gcloud auth configure-docker takes a host. Given a URL it complains in a
+    # way that does not point at the cause.
+    gcloud_registry_host = "https://us-central1-docker.pkg.dev"
+  }
+
+  expect_failures = [var.gcloud_registry_host]
+}
+
+run "rejects_a_gke_cluster_without_its_zone" {
+  command = plan
+
+  variables {
+    gke_cluster_name = "dss-elastic-ai"
+  }
+
+  # Checked on the output rather than the variable: a validation block could
+  # not look at a second variable until Terraform 1.9, and this module supports
+  # 1.5. See the precondition in outputs.tf.
+  expect_failures = [output.install_script]
+}
+
+run "rejects_building_a_base_image_without_a_docker_daemon" {
+  command = plan
+
+  variables {
+    build_base_image = true
+  }
+
+  # Without containerized_execution there is no Docker on the host, and the
+  # build step only warns, so the instance would come up healthy with no base
+  # image and nothing said about it until a containerized recipe failed.
+  expect_failures = [output.install_script]
+}
+
+run "accepts_building_a_base_image_alongside_the_daemon" {
+  command = plan
+
+  variables {
+    build_base_image        = true
+    containerized_execution = true
+  }
+
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "dssadmin build-base-image --type container-exec")
+    ])
+    error_message = "The base image build did not render when it was asked for alongside the daemon."
+  }
+}
+
+run "rejects_a_zone_without_a_gke_cluster" {
+  command = plan
+
+  variables {
+    gke_cluster_zone = "us-central1-a"
+  }
+
+  expect_failures = [output.install_script]
+}
+
 run "accepts_a_valid_configuration" {
   command = plan
 
