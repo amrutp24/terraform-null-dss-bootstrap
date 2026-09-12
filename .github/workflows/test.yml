@@ -1,0 +1,59 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  # The module declares required_version = ">= 1.5", and nothing checked that
+  # claim until now. Running the floor alongside the newest release is what
+  # turns it from an assertion into something tested.
+  validate:
+    name: Validate (Terraform ${{ matrix.terraform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        terraform:
+          - '1.5.*'
+          - 'latest'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: ${{ matrix.terraform }}
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive
+
+      # No backend and no providers, so this needs no credentials and reaches
+      # nothing.
+      - run: terraform init -backend=false
+      - run: terraform validate
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    # terraform test arrived in 1.6, so the suite cannot run on the 1.5 floor
+    # the module supports. Consumers on 1.5 are covered by the validate job
+    # above; the assertions themselves need something newer.
+    steps:
+      - uses: actions/checkout@v7
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 'latest'
+          terraform_wrapper: false
+
+      - run: terraform init -backend=false
+
+      # Every assertion is a plan-time check on the rendered script. There is
+      # no cloud, no credentials and nothing to clean up, which is the whole
+      # reason this can run on every pull request.
+      - run: terraform test
+        timeout-minutes: 10
