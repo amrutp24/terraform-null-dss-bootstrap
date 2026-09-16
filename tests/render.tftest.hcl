@@ -412,6 +412,46 @@ run "a_registry_host_configures_docker_credentials_only" {
   }
 }
 
+# Regression from a real boot. The stock GCE Ubuntu image ships gcloud as a
+# snap, and a snap gcloud refuses "components install" with "managed by an
+# external package manager". The script saw gcloud on PATH, took the "already
+# installed" path, warned once that the plugin was missing and carried on. The
+# instance came up healthy with kubectl unable to authenticate to GKE at all:
+# every call failed with "executable gke-gcloud-auth-plugin not found", so no
+# containerized recipe could run.
+#
+# A warning is not enough on its own. There has to be a fallback that installs
+# Google's own build and takes the plugin from it.
+run "falls_back_when_gcloud_cannot_install_components" {
+  command = plan
+
+  variables {
+    containerized_execution = true
+    gke_cluster_name        = "dss-elastic-ai"
+    gke_cluster_zone        = "us-central1-a"
+  }
+
+  # The tarball install has to be reachable from inside the plugin block, not
+  # only from the branch that runs when gcloud is absent entirely.
+  assert {
+    condition = anytrue([
+      for line in split("\n", split("gcloud components install", output.install_script)[1]) :
+      strcontains(split("#", line)[0], "install_gcloud_tarball")
+    ])
+    error_message = "Nothing installs a working gcloud after the components install is attempted, so the plugin can never arrive on a host whose gcloud refuses."
+  }
+
+  # And the plugin it installs must be reachable by the DSS user, which means
+  # a symlink on the default PATH rather than only in /opt.
+  assert {
+    condition = anytrue([
+      for line in split("\n", output.install_script) :
+      strcontains(split("#", line)[0], "ln -sf /opt/google-cloud-sdk/bin/gke-gcloud-auth-plugin")
+    ])
+    error_message = "The plugin is not linked onto the default PATH, so kubectl will not find it."
+  }
+}
+
 run "a_gke_cluster_fetches_credentials_only" {
   command = plan
 

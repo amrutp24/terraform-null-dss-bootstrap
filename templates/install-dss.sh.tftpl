@@ -193,11 +193,10 @@ fi
 # image build.
 # ---------------------------------------------------------------------------
 
-if command -v gcloud >/dev/null 2>&1; then
-  # The stock GCE Debian and Ubuntu images already ship the CLI, and on those
-  # it is a distribution package we should not fight with a tarball install.
-  log "gcloud is already installed, leaving it alone"
-else
+# install_gcloud_tarball puts Google's own build in /opt and ahead on PATH.
+# Its component manager works, which is the thing a packaged gcloud may not
+# offer.
+install_gcloud_tarball() {
   # Google's archive names do not match Kubernetes': x86_64 and arm, not amd64
   # and arm64. Getting this wrong is a 404 on an otherwise fine host.
   case "$(uname -m)" in
@@ -209,8 +208,6 @@ else
       ;;
   esac
 
-  # Aborts on failure: the only reason this block rendered at all is that a
-  # caller asked for GCP wiring, and every step after it needs the CLI.
   log "installing the gcloud CLI"
   curl --fail --location --retry 5 --retry-delay 10 \
     --output /tmp/google-cloud-cli.tar.gz \
@@ -223,18 +220,52 @@ else
   # written into /etc/profile.d would never be read. A symlink on the default
   # PATH is what actually makes gcloud reachable from a recipe.
   ln -sf /opt/google-cloud-sdk/bin/gcloud /usr/local/bin/gcloud
+}
+
+if command -v gcloud >/dev/null 2>&1; then
+  log "gcloud is already installed, leaving it alone"
+else
+  # Aborts on failure: the only reason this block rendered at all is that a
+  # caller asked for GCP wiring, and every step after it needs the CLI.
+  install_gcloud_tarball
 fi
 
 if ! command -v gke-gcloud-auth-plugin >/dev/null 2>&1; then
-  # get-credentials writes a kubeconfig that shells out to this plugin; without
-  # it kubectl fails with "no Auth Provider found for name \"gcp\"".
+  # get-credentials writes a kubeconfig that shells out to this plugin. Without
+  # it kubectl cannot talk to GKE at all: every call fails with "executable
+  # gke-gcloud-auth-plugin not found", which is a working instance that cannot
+  # run a single containerized recipe.
   #
-  # Soft-failed: a gcloud that came from a distribution package has its
-  # component manager disabled and refuses this command outright, because the
-  # plugin ships as its own package there. That is a normal, working setup on
-  # GCE images, so it must not abort a boot.
-  gcloud components install gke-gcloud-auth-plugin --quiet ||
-    log "warning: could not install gke-gcloud-auth-plugin, kubectl may fail to authenticate to GKE"
+  # A gcloud that came from a package manager cannot supply it. The stock GCE
+  # Ubuntu image ships the CLI as a snap, and a snap gcloud refuses with "this
+  # Google Cloud CLI installation is managed by an external package manager".
+  # An earlier version of this script warned and moved on at that point, and
+  # the instance came up healthy with kubectl unable to authenticate.
+  #
+  # So try, and if the plugin is still absent afterwards, install Google's own
+  # build alongside whatever is there and use its component manager. Two gcloud
+  # installations coexist happily: the symlink puts this one first on PATH, and
+  # the packaged one still answers on its own path.
+  log "installing gke-gcloud-auth-plugin"
+  gcloud components install gke-gcloud-auth-plugin --quiet >/dev/null 2>&1 || true
+
+  if ! command -v gke-gcloud-auth-plugin >/dev/null 2>&1; then
+    log "this gcloud cannot install components, installing Google's own build"
+    if [ ! -x /opt/google-cloud-sdk/bin/gcloud ]; then
+      install_gcloud_tarball
+    fi
+    /opt/google-cloud-sdk/bin/gcloud components install gke-gcloud-auth-plugin --quiet >/dev/null 2>&1 || true
+    ln -sf /opt/google-cloud-sdk/bin/gke-gcloud-auth-plugin /usr/local/bin/gke-gcloud-auth-plugin
+  fi
+
+  # Warn rather than abort, because the instance is otherwise usable and an
+  # admin fixes this with one command. But say plainly what is broken: this is
+  # not a cosmetic warning.
+  if command -v gke-gcloud-auth-plugin >/dev/null 2>&1; then
+    log "gke-gcloud-auth-plugin is available"
+  else
+    log "warning: gke-gcloud-auth-plugin could not be installed, so kubectl cannot authenticate to GKE and containerized execution will not run"
+  fi
 fi
 
 %{ if gcloud_registry_host != "" ~}
