@@ -11,7 +11,7 @@ cloud, on bare metal, or in an image build.
 ```
 ┌─────────────────┐   install_script   ┌──────────────────┐   dataiku provider   ┌──────────────┐
 │  this module    │ ─────────────────► │ compute you own  │ ───────────────────► │ projects,    │
-│                 │                    │ VM / host / AMI  │                      │ code envs, … │
+│                 │                    │ VM / host / AMI  │                      │ code envs, etc │
 └─────────────────┘                    └──────────────────┘                      └──────────────┘
 ```
 
@@ -173,7 +173,7 @@ denied whatever the machine image ships. Setting both costs a host that already
 has Docker nothing, since the install is skipped when the `docker` command is
 already present. It runs last, after DSS is installed and answering, and a
 failure warns rather than aborting: nothing else in the script depends on it and
-re-running it is one command. The GKE credential fetch warns for the same kind of reason — a
+re-running it is one command. The GKE credential fetch warns for the same kind of reason: a
 cluster that Terraform is still creating, or a service account that does not yet
 have `container.clusters.get`, should not kill a boot that already downloaded
 1.9 GB. Everything else in this section aborts the boot on failure, because a
@@ -198,7 +198,7 @@ somebody runs a recipe days later.
   kubectl tolerates one minor version of skew from the cluster and will
   eventually stop talking to it.
 - **It does not rerun on reboot.** The existing "DSS is already installed" guard
-  exits before any of this, so a reboot does not reinstall Docker — and equally,
+  exits before any of this, so a reboot does not reinstall Docker, and equally,
   turning `containerized_execution` on for an instance that is already up does
   nothing until you rebuild it or run the steps by hand.
 - **It does not verify anything worked.** There is no post-install check that

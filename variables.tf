@@ -62,6 +62,31 @@ variable "license_json" {
   sensitive   = true
 }
 
+variable "license_fetch_command" {
+  description = <<-EOT
+    Shell command the instance runs at boot to obtain its DSS licence, which
+    must print the licence JSON on standard output. Used only when
+    license_json is empty.
+
+    This exists so the licence does not have to travel through Terraform. The
+    command names where the licence lives, and the instance reads it directly,
+    so no licence material reaches state or instance metadata. Whatever the
+    command needs to authenticate has to be available to the instance itself,
+    which on AWS means an instance profile and on GCP a service account.
+
+    For example, reading a SecureString parameter on AWS:
+
+      aws ssm get-parameter --name /dss/license --with-decryption \
+        --region us-east-1 --query Parameter.Value --output text
+
+    A command that fails, or that prints something which is not JSON, leaves
+    the instance unlicensed rather than half configured, and says so in the
+    boot log.
+  EOT
+  type        = string
+  default     = ""
+}
+
 variable "create_api_key" {
   description = "Whether the bootstrap mints an admin API key so Terraform can then configure the instance. Without it you have to create a key by hand before the dataiku provider can do anything."
   type        = bool

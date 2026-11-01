@@ -139,6 +139,78 @@ run "licence_is_written_and_passed_to_the_installer" {
   }
 }
 
+run "a_fetch_command_is_run_on_the_instance_instead_of_rendering_a_licence" {
+  command = plan
+
+  variables {
+    license_fetch_command = "aws ssm get-parameter --name /dss/license --with-decryption --query Parameter.Value --output text"
+  }
+
+  assert {
+    condition     = strcontains(output.install_script, "aws ssm get-parameter --name /dss/license")
+    error_message = "The fetch command should be rendered into the script."
+  }
+
+  assert {
+    condition     = strcontains(output.install_script, "fetching licence")
+    error_message = "The fetch branch should be rendered when a command is supplied."
+  }
+
+  # The point of the feature. A licence written into the script reaches
+  # Terraform state and instance metadata; a command that names where the
+  # licence lives does not.
+  assert {
+    condition     = !strcontains(output.install_script, "writing licence")
+    error_message = "A fetch command must not also render the inline licence block."
+  }
+
+  assert {
+    condition     = strcontains(output.install_script, "-m 0600")
+    error_message = "The fetched licence file must not be world-readable."
+  }
+}
+
+# A fetch that returns junk is worse than no licence: the installer takes the
+# file and DSS rejects it later. The script has to check before using it.
+run "a_fetched_licence_is_checked_before_it_is_used" {
+  command = plan
+
+  variables {
+    license_fetch_command = "cat /dev/null"
+  }
+
+  assert {
+    condition     = strcontains(output.install_script, "grep -q '^[[:space:]]*{'")
+    error_message = "The script must verify the fetched licence looks like JSON before passing it to the installer."
+  }
+
+  assert {
+    condition     = strcontains(output.install_script, "installing unlicensed")
+    error_message = "A failed or empty fetch must fall back to an unlicensed install rather than a broken one."
+  }
+}
+
+# Both set is a configuration mistake rather than a combination, so one has to
+# win predictably. license_json wins, because it is the explicit value.
+run "an_inline_licence_wins_over_a_fetch_command" {
+  command = plan
+
+  variables {
+    license_json          = "{\"licenseKind\":\"COMMUNITY\"}"
+    license_fetch_command = "aws ssm get-parameter --name /dss/license"
+  }
+
+  assert {
+    condition     = strcontains(output.install_script, "writing licence")
+    error_message = "license_json should still be written when both are set."
+  }
+
+  assert {
+    condition     = !strcontains(output.install_script, "fetching licence")
+    error_message = "The fetch branch must not render when license_json is set."
+  }
+}
+
 run "no_licence_means_no_licence_flag" {
   command = plan
 
