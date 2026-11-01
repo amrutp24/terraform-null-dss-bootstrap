@@ -315,7 +315,33 @@ DSS_LICENSE_EOF
 chown "$DSS_USER:$DSS_USER" "$INSTALL_DIR/license.json"
 LICENSE_FLAG="-l $INSTALL_DIR/license.json"
 %{ else ~}
+%{ if license_fetch_command != "" ~}
+# Fetching the licence here rather than rendering it into this script is the
+# whole point of license_fetch_command: the licence never reaches Terraform
+# state or instance metadata, only the command that names where it lives.
+log "fetching licence"
+install -o "$DSS_USER" -g "$DSS_USER" -m 0600 /dev/null "$INSTALL_DIR/license.json"
 LICENSE_FLAG=""
+if ${license_fetch_command} > "$INSTALL_DIR/license.json" 2>/tmp/dss-license-fetch.log; then
+  # A command that succeeds and returns something that is not a licence is
+  # worse than no licence at all: the installer accepts the file and DSS
+  # rejects it later, which is much harder to diagnose than an unlicensed
+  # install. So check before using it, and say so in the log either way.
+  if grep -q '^[[:space:]]*{' "$INSTALL_DIR/license.json" 2>/dev/null; then
+    chown "$DSS_USER:$DSS_USER" "$INSTALL_DIR/license.json"
+    LICENSE_FLAG="-l $INSTALL_DIR/license.json"
+    log "licence fetched"
+  else
+    log "warning: the licence command returned nothing that looks like JSON, installing unlicensed"
+    rm -f "$INSTALL_DIR/license.json"
+  fi
+else
+  log "warning: the licence command failed, installing unlicensed, see /tmp/dss-license-fetch.log"
+  rm -f "$INSTALL_DIR/license.json"
+fi
+%{ else ~}
+LICENSE_FLAG=""
+%{ endif ~}
 %{ endif ~}
 
 log "running installer into $DATA_DIR on port $DSS_PORT"

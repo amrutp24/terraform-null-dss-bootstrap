@@ -9,16 +9,17 @@ terraform {
 
 locals {
   rendered_script = templatefile("${path.module}/templates/install-dss.sh.tftpl", {
-    dss_version       = var.dss_version
-    dss_port          = var.dss_port
-    dss_user          = var.dss_user
-    install_dir       = var.install_dir
-    data_dir          = var.data_dir
-    download_base_url = var.download_base_url
-    license_json      = var.license_json
-    create_api_key    = var.create_api_key
-    api_key_label     = var.api_key_label
-    api_key_path      = var.api_key_path
+    dss_version           = var.dss_version
+    dss_port              = var.dss_port
+    dss_user              = var.dss_user
+    install_dir           = var.install_dir
+    data_dir              = var.data_dir
+    download_base_url     = var.download_base_url
+    license_json          = var.license_json
+    license_fetch_command = var.license_fetch_command
+    create_api_key        = var.create_api_key
+    api_key_label         = var.api_key_label
+    api_key_path          = var.api_key_path
 
     containerized_execution = var.containerized_execution
     kubectl_version         = var.kubectl_version
