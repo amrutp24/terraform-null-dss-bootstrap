@@ -231,7 +231,7 @@ state. Fetching the file over SSH with a `remote-exec` or an `external` data
 source works too.
 
 Or skip it entirely. Set `create_api_key = false` and create a global API key
-under Administration → Security once the instance is up.
+under Administration -> Security once the instance is up.
 
 ## Sizing
 
@@ -283,12 +283,35 @@ curl -su "$DATAIKU_API_KEY:" "$DSS_URL/public/api/admin/general-settings/" -o /d
 `200` means the provider will work. `401` is a bad key. A licence error names
 itself in the body, and then you need a licence with API access.
 
-Pass a licence with `license_json` if you have one, or register the instance
-through its web interface on first visit.
+There are two ways to give the instance a licence, and one of them keeps the
+licence out of Terraform.
 
-`license_json` is rendered into the script, so it reaches instance metadata and
-Terraform state. Supply it from a secret store rather than a file in your
-repository.
+`license_json` takes the licence itself. It is simpler, and it is rendered
+into the script, so it reaches instance metadata and Terraform state. Supply
+it from a secret store rather than a file in your repository.
+
+`license_fetch_command` takes a command the instance runs at boot, which must
+print the licence on standard output. The instance writes the file itself, so
+no licence material travels through Terraform: only the command does, and
+that names where the licence lives rather than carrying one. Whatever it
+needs to authenticate has to belong to the instance, which on AWS means an
+instance profile and on GCP a service account, so the variable stays cloud
+agnostic. For example, reading a SecureString parameter on AWS:
+
+```hcl
+license_fetch_command = "aws ssm get-parameter --name /dss/license --with-decryption --query Parameter.Value --output text"
+```
+
+A command that fails, or that prints something which is not JSON, leaves the
+instance unlicensed rather than half configured, and says which in the boot
+log. The opposite is worse: the installer takes any file it is given, and DSS
+rejects a bad licence much later where the cause is no longer visible.
+
+`license_json` wins if both are set, since it is the explicit value.
+
+Neither removes the DSS login page. DSS always asks for credentials. What
+they remove is the Free Edition registration form, which otherwise needs a
+human in a browser on every rebuild.
 
 ## License
 
